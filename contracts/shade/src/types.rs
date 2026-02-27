@@ -23,9 +23,10 @@ pub enum DataKey {
     AccountWasmHash,
     Role(Address, Role),
     UsedNonce(Address, BytesN<32>),
-    Plan(u64),
-    PlanCount,
+    // --- Subscription engine ---
+    SubscriptionPlan(u64),
     Subscription(u64),
+    PlanCount,
     SubscriptionCount,
 }
 
@@ -101,15 +102,25 @@ pub enum Role {
     Operator,
 }
 
+// ── Subscription engine ───────────────────────────────────────────────────────
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubscriptionPlan {
     pub id: u64,
+    /// Numeric merchant ID — used to look up the merchant's account contract.
     pub merchant_id: u64,
+    /// The merchant's wallet address — needed for event emission and auth checks.
+    pub merchant: Address,
+    /// Human-readable description of the plan.
     pub description: soroban_sdk::String,
-    pub amount: i128,
+    /// Token used for billing.
     pub token: Address,
+    /// Amount charged per interval (in token base units).
+    pub amount: i128,
+    /// Billing interval in seconds (e.g. 2_592_000 = 30 days).
     pub interval: u64,
+    /// Whether this plan is accepting new subscribers.
     pub active: bool,
 }
 
@@ -119,9 +130,12 @@ pub struct Subscription {
     pub id: u64,
     pub plan_id: u64,
     pub customer: Address,
+    /// Copied from the plan for quick access during auth checks.
     pub merchant_id: u64,
     pub status: SubscriptionStatus,
     pub date_created: u64,
+    /// Ledger timestamp of the last successful charge.
+    /// Starts at 0 so the first charge is available immediately.
     pub last_charged: u64,
 }
 

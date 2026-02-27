@@ -72,21 +72,45 @@ pub trait ShadeTrait {
         new_amount: Option<i128>,
         new_description: Option<String>,
     );
+
+    // ── Admin transfer (two-step handover) ───────────────────────────────────
+
+    /// Step 1: Current admin proposes a new admin address.
     fn propose_admin_transfer(env: Env, admin: Address, new_admin: Address);
+
+    /// Step 2: Proposed new admin accepts and takes ownership.
     fn accept_admin_transfer(env: Env, new_admin: Address);
 
-    // Subscription methods
-    fn create_plan(
+    // ── Subscription engine ───────────────────────────────────────────────────
+
+    /// Create a recurring billing plan.
+    /// Only `merchant` can call this (requires auth). Returns new plan ID.
+    fn create_subscription_plan(
         env: Env,
         merchant: Address,
         description: String,
-        amount: i128,
         token: Address,
+        amount: i128,
         interval: u64,
     ) -> u64;
+
+    /// Fetch a plan by ID.
+    fn get_subscription_plan(env: Env, plan_id: u64) -> SubscriptionPlan;
+
+    /// Subscribe a customer to a plan.
+    /// The customer must have already called `token.approve` to grant the Shade
+    /// contract sufficient allowance for recurring charges.
+    /// Returns the new subscription ID.
     fn subscribe(env: Env, customer: Address, plan_id: u64) -> u64;
-    fn charge_subscription(env: Env, subscription_id: u64);
-    fn cancel_subscription(env: Env, caller: Address, subscription_id: u64);
-    fn get_plan(env: Env, plan_id: u64) -> SubscriptionPlan;
+
+    /// Fetch a subscription by ID.
     fn get_subscription(env: Env, subscription_id: u64) -> Subscription;
+
+    /// Trigger a charge for a subscription.
+    /// Callable by anyone (merchant or automated bot).
+    /// Panics if the billing interval has not yet elapsed or subscription is not active.
+    fn charge_subscription(env: Env, subscription_id: u64);
+
+    /// Cancel a subscription. Either the customer or the merchant may call this.
+    fn cancel_subscription(env: Env, caller: Address, subscription_id: u64);
 }

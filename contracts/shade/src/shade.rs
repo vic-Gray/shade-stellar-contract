@@ -242,23 +242,38 @@ impl ShadeTrait for Shade {
         admin_component::accept_admin_transfer(&env, &new_admin);
     }
 
-    // ---- Subscription Engine ----
+    // ── Subscription engine ───────────────────────────────────────────────────
 
-    fn create_plan(
+    fn create_subscription_plan(
         env: Env,
         merchant: Address,
         description: String,
-        amount: i128,
         token: Address,
+        amount: i128,
         interval: u64,
     ) -> u64 {
         pausable_component::assert_not_paused(&env);
-        subscription_component::create_plan(&env, &merchant, &description, amount, &token, interval)
+        subscription_component::create_subscription_plan(
+            &env,
+            merchant,
+            description,
+            token,
+            amount,
+            interval,
+        )
+    }
+
+    fn get_subscription_plan(env: Env, plan_id: u64) -> SubscriptionPlan {
+        subscription_component::get_subscription_plan(&env, plan_id)
     }
 
     fn subscribe(env: Env, customer: Address, plan_id: u64) -> u64 {
         pausable_component::assert_not_paused(&env);
-        subscription_component::subscribe(&env, &customer, plan_id)
+        subscription_component::subscribe(&env, customer, plan_id)
+    }
+
+    fn get_subscription(env: Env, subscription_id: u64) -> Subscription {
+        subscription_component::get_subscription(&env, subscription_id)
     }
 
     fn charge_subscription(env: Env, subscription_id: u64) {
@@ -268,14 +283,6 @@ impl ShadeTrait for Shade {
 
     fn cancel_subscription(env: Env, caller: Address, subscription_id: u64) {
         pausable_component::assert_not_paused(&env);
-        subscription_component::cancel_subscription(&env, &caller, subscription_id);
-    }
-
-    fn get_plan(env: Env, plan_id: u64) -> SubscriptionPlan {
-        subscription_component::get_plan(&env, plan_id)
-    }
-
-    fn get_subscription(env: Env, subscription_id: u64) -> Subscription {
-        subscription_component::get_subscription(&env, subscription_id)
+        subscription_component::cancel_subscription(&env, caller, subscription_id);
     }
 }
