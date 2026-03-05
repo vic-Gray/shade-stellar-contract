@@ -12,17 +12,19 @@ pub trait MerchantAccountRefund {
 
 pub const MAX_REFUND_DURATION: u64 = 604_800; // 7 days
 
-pub fn create_invoice(
+pub fn validate_invoice_creation(
     env: &Env,
     merchant_address: &Address,
     description: &String,
     amount: i128,
     token: &Address,
     expires_at: Option<u64>,
-) -> u64 {
-    merchant_address.require_auth();
+) {
     if amount <= 0 {
         panic_with_error!(env, ContractError::InvalidAmount);
+    }
+    if description.len() > 100 {
+        panic_with_error!(env, ContractError::InvalidDescription);
     }
     if !merchant::is_merchant(env, merchant_address) {
         panic_with_error!(env, ContractError::NotAuthorized);
@@ -41,7 +43,35 @@ pub fn create_invoice(
     if amount <= fee_amount {
         panic_with_error!(env, ContractError::InvalidAmount);
     }
+
     let merchant_id: u64 = merchant::get_merchant_id(env, merchant_address);
+
+    // ensure merchant is active
+    if !merchant::is_merchant_active(env, merchant_id) {
+        panic_with_error!(env, ContractError::MerchantNotActive);
+    }
+}
+
+pub fn create_invoice(
+    env: &Env,
+    merchant_address: &Address,
+    description: &String,
+    amount: i128,
+    token: &Address,
+    expires_at: Option<u64>,
+) -> u64 {
+    merchant_address.require_auth();
+    validate_invoice_creation(
+        env,
+        merchant_address,
+        description,
+        amount,
+        token,
+        expires_at,
+    );
+
+    let merchant_id: u64 = merchant::get_merchant_id(env, merchant_address);
+
     let invoice_count: u64 = env
         .storage()
         .persistent()
@@ -95,24 +125,8 @@ pub fn create_invoice_signed(
     }
     caller.require_auth();
 
-    // Validate amount
-    if amount <= 0 {
-        panic_with_error!(env, ContractError::InvalidAmount);
-    }
-
-    // Merchant must exist
-    if !merchant::is_merchant(env, merchant) {
-        panic_with_error!(env, ContractError::MerchantNotFound);
-    }
-
-    if !admin::is_accepted_token(env, token) {
-        panic_with_error!(env, ContractError::TokenNotAccepted);
-    }
-    // check if amount is less than fee amount for the token
-    let fee_amount = admin::get_fee(env, token);
-    if amount <= fee_amount {
-        panic_with_error!(env, ContractError::InvalidAmount);
-    }
+    // validate invoice creation
+    validate_invoice_creation(env, merchant, description, amount, token, None);
 
     // Verify merchant's cryptographic signature
     signature_util::verify_invoice_signature(

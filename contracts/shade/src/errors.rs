@@ -35,4 +35,6 @@ pub enum ContractError {
     PayerNotAvailable = 29,
     InsufficientBalance = 30,
     InsufficientAllowance = 31,
+    MerchantNotActive = 32,
+    InvalidDescription = 33,
 }
