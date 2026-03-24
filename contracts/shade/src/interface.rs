@@ -42,4 +42,6 @@ pub trait ShadeTrait {
         merchant_address: Address,
         status: bool,
     );
+    fn calculate_fee(env: Env, merchant: Address, token: Address, amount: i128) -> i128;
+    fn get_merchant_volume(env: Env, merchant: Address) -> i128;
 }

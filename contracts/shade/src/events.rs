@@ -248,3 +248,27 @@ pub fn publish_account_restricted_event(
     }
     .publish(env);
 }
+
+#[contractevent]
+pub struct FeeDiscountAppliedEvent {
+    pub merchant: Address,
+    pub volume: i128,
+    pub discount_bps: i128,
+    pub timestamp: u64,
+}
+
+pub fn publish_fee_discount_applied_event(
+    env: &Env,
+    merchant: Address,
+    volume: i128,
+    discount_bps: i128,
+    timestamp: u64,
+) {
+    FeeDiscountAppliedEvent {
+        merchant,
+        volume,
+        discount_bps,
+        timestamp,
+    }
+    .publish(env);
+}

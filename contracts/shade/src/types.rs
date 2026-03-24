@@ -20,6 +20,7 @@ pub enum DataKey {
     ReentrancyStatus,
     Role(Address, Role),
     MerchantAccount(Address),
+    MerchantVolume(Address),
 }
 
 #[contracttype]
@@ -85,4 +86,11 @@ pub enum Role {
     Admin,
     Manager,
     Operator,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolumeDiscount {
+    pub min_volume: i128,
+    pub discount_bps: i128,
 }
