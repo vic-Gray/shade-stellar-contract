@@ -375,6 +375,11 @@ pub fn publish_fee_discount_applied_event(
         merchant,
         volume,
         discount_bps,
+        timestamp,
+    }
+    .publish(env);
+}
+
 // Kept merchant_amount from your branch AND merchant_account from main — both are useful.
 #[contractevent]
 pub struct InvoicePaidEvent {

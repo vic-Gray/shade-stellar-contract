@@ -131,7 +131,6 @@ pub fn get_fee(env: &Env, token: &Address) -> i128 {
         .unwrap_or(0)
 }
 
-<<<<<<< feature/144-fee-discount-system
 pub fn calculate_fee(env: &Env, merchant: &Address, token: &Address, amount: i128) -> i128 {
     let base_fee = get_fee(env, token);
     if base_fee == 0 {
@@ -179,18 +178,6 @@ fn discount_bps_for_volume(volume: i128) -> i128 {
     } else {
         0
     }
-}
-
-fn get_accepted_tokens(env: &Env) -> Vec<Address> {
-pub fn get_fee_for_amount(env: &Env, token: &Address, amount: i128) -> i128 {
-=======
-pub fn calculate_fee(env: &Env, token: &Address, amount: i128) -> i128 {
->>>>>>> main
-    let fee_bps: i128 = get_fee(env, token);
-    if fee_bps == 0 {
-        return 0;
-    }
-    (amount * fee_bps) / 10_000i128
 }
 
 pub fn propose_fee(env: &Env, admin: &Address, token: &Address, fee: i128) {
