@@ -34,8 +34,14 @@ fn test_calculate_fee_returns_zero_when_no_fee_set() {
 
     env.as_contract(&contract_id, || {
         assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 0), 0);
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 1_000), 0);
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 1_000_000), 0);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 1_000),
+            0
+        );
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 1_000_000),
+            0
+        );
     });
 }
 
@@ -63,7 +69,10 @@ fn test_calculate_fee_5_percent() {
     client.set_fee(&admin, &token, &500);
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 1_000), 50);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 1_000),
+            50
+        );
     });
 }
 
@@ -77,7 +86,10 @@ fn test_calculate_fee_1_percent() {
     client.set_fee(&admin, &token, &100);
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 10_000), 100);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 10_000),
+            100
+        );
     });
 }
 
@@ -91,7 +103,10 @@ fn test_calculate_fee_10_percent() {
     client.set_fee(&admin, &token, &1_000);
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 5_000), 500);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 5_000),
+            500
+        );
     });
 }
 
@@ -105,7 +120,10 @@ fn test_calculate_fee_100_percent() {
     client.set_fee(&admin, &token, &10_000);
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 1_000), 1_000);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 1_000),
+            1_000
+        );
     });
 }
 
@@ -122,9 +140,15 @@ fn test_calculate_fee_truncates_fractional_result() {
     env.as_contract(&contract_id, || {
         // Too small to produce a whole unit
         assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 1), 0);
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 9_999), 0);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 9_999),
+            0
+        );
         // Exactly at the boundary: 10_000 * 1 / 10_000 = 1
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 10_000), 1);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 10_000),
+            1
+        );
     });
 }
 
@@ -138,13 +162,19 @@ fn test_calculate_fee_reflects_updated_fee() {
     client.set_fee(&admin, &token, &200); // 2%
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 10_000), 200);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 10_000),
+            200
+        );
     });
 
     client.set_fee(&admin, &token, &500); // updated to 5%
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token, 10_000), 500);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token, 10_000),
+            500
+        );
     });
 }
 
@@ -184,7 +214,13 @@ fn test_calculate_fee_per_token_independence() {
     client.set_fee(&admin, &token_b, &700); // 7%
 
     env.as_contract(&contract_id, || {
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token_a, 10_000), 300);
-        assert_eq!(admin_component::calculate_fee(&env, &admin, &token_b, 10_000), 700);
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token_a, 10_000),
+            300
+        );
+        assert_eq!(
+            admin_component::calculate_fee(&env, &admin, &token_b, 10_000),
+            700
+        );
     });
 }

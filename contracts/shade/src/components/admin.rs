@@ -163,9 +163,10 @@ pub fn get_merchant_volume(env: &Env, merchant: &Address) -> i128 {
 
 pub fn add_merchant_volume(env: &Env, merchant: &Address, amount: i128) {
     let current = get_merchant_volume(env, merchant);
-    env.storage()
-        .persistent()
-        .set(&DataKey::MerchantVolume(merchant.clone()), &(current + amount));
+    env.storage().persistent().set(
+        &DataKey::MerchantVolume(merchant.clone()),
+        &(current + amount),
+    );
 }
 
 fn discount_bps_for_volume(volume: i128) -> i128 {
