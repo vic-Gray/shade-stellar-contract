@@ -260,7 +260,28 @@ fn test_withdraw_to_emits_event() {
     assert!(!events.is_empty(), "Withdrawal event should be emitted");
 }
 
-/// Test Case 9: Withdrawal Analytics Aggregation
+/// Test Case 9: Withdrawal Restricted Account
+/// Attempting to withdraw when the account is restricted should panic.
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #5)")]
+fn test_withdraw_to_restricted_account_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_contract_id, client, _merchant) = setup_initialized_account(&env);
+    let token = create_test_token(&env);
+    let recipient = Address::generate(&env);
+
+    let token_client = token::StellarAssetClient::new(&env, &token);
+    let contract_address = _contract_id.clone();
+    token_client.mint(&contract_address, &5000);
+
+    client.restrict_account(&true);
+
+    client.withdraw_to(&token, &1000, &recipient);
+}
+
+/// Test Case 10: Withdrawal Analytics Aggregation
 /// Verify that withdrawal counts and amounts are tracked per token.
 #[test]
 fn test_withdraw_to_tracks_analytics() {

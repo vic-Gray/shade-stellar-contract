@@ -32,6 +32,7 @@ pub enum DataKey {
     PendingTokenFee(Address),
     // --- Fee discount system ---
     MerchantVolume(Address, Address),
+    UserTransactions(Address),
     MerchantAnalytics(Address, Address),
     MerchantAnalyticsSummary(Address),
     PlatformAccount,
@@ -54,6 +55,7 @@ pub struct Merchant {
     pub verified: bool,
     pub date_registered: u64,
     pub account: Address,
+    pub webhook: String,
 }
 
 #[contracttype]
@@ -189,15 +191,16 @@ pub struct PendingFee {
     pub fee: i128,
     pub proposed_at: u64,
 }
-// ── Subscription engine ───────────────────────────────────────────────────────
+
+// --- Subscription engine ---
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubscriptionPlan {
     pub id: u64,
-    /// Numeric merchant ID — used to look up the merchant's account contract.
+    /// Numeric merchant ID - used to look up the merchant's account contract.
     pub merchant_id: u64,
-    /// The merchant's wallet address — needed for event emission and auth checks.
+    /// The merchant's wallet address - needed for event emission and auth checks.
     pub merchant: Address,
     /// Human-readable description of the plan.
     pub description: soroban_sdk::String,
@@ -232,4 +235,23 @@ pub struct Subscription {
 pub enum SubscriptionStatus {
     Active = 0,
     Cancelled = 1,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransactionType {
+    InvoicePayment = 0,
+    SubscriptionCharge = 1,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Transaction {
+    pub transaction_type: TransactionType,
+    pub ref_id: u64,
+    pub amount: i128,
+    pub token: Address,
+    pub description: soroban_sdk::String,
+    pub date: u64,
+    pub merchant_id: u64,
 }
