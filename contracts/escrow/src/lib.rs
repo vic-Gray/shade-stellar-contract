@@ -1,6 +1,4 @@
 #![no_std]
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, token, Address, Env, String};
-
 mod errors;
 
 use crate::errors::EscrowError;
@@ -19,8 +17,6 @@ enum DataKey {
     Arbiter,
     Terms,
     Token,
-    Amount,
-    Status,
     Deadline,
     TotalAmount,
     Status,
@@ -43,16 +39,12 @@ pub struct Milestone {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EscrowStatus {
-    Pending,
-    Completed,
-    Disputed,
-    Resolved,
-    Expired,
     Pending = 0,
     Completed = 1,
     Disputed = 2,
     Resolved = 3,
     PartiallyReleased = 4,
+    Expired = 5,
 }
 
 #[contractevent]
@@ -285,6 +277,59 @@ impl EscrowContract {
         .publish(&env);
     }
 
+    pub fn deposit(env: Env, shade_contract: Address, invoice_id: u64) {
+        use soroban_sdk::IntoVal;
+
+        let buyer: Address = env.storage().instance().get(&DataKey::Buyer).unwrap();
+        buyer.require_auth();
+
+        if _get_status(&env) != EscrowStatus::Pending {
+            panic_with_error!(env, EscrowError::InvalidStatus);
+        }
+
+        let token = _get_token(&env);
+        let token_client = token::TokenClient::new(&env, &token);
+        let initial_balance = token_client.balance(&env.current_contract_address());
+        let expected_amount = _get_total_amount(&env);
+
+        // Verify buyer has sufficient balance before attempting payment
+        let buyer_balance = token_client.balance(&buyer);
+        if buyer_balance < expected_amount {
+            panic_with_error!(env, EscrowError::DepositFailed);
+        }
+
+        let mut invoke_args = soroban_sdk::Vec::new(&env);
+        invoke_args.push_back(buyer.into_val(&env));
+        invoke_args.push_back(invoice_id.into_val(&env));
+
+        // Call Shade contract to process payment
+        env.invoke_contract::<()>(
+            &shade_contract,
+            &soroban_sdk::Symbol::new(&env, "pay_invoice"),
+            invoke_args,
+        );
+
+        // Verify the deposit was successful
+        let new_balance = token_client.balance(&env.current_contract_address());
+        let deposited_amount = new_balance - initial_balance;
+        
+        if deposited_amount < expected_amount {
+            panic_with_error!(env, EscrowError::DepositFailed);
+        }
+
+        // Emit deposit success event
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "deposit_success"),),
+            (
+                buyer.clone(),
+                shade_contract,
+                invoice_id,
+                deposited_amount,
+                token.clone(),
+            ),
+        );
+    }
+
     pub fn set_platform_account(env: Env, caller: Address, platform_account: Address) {
         caller.require_auth();
 
@@ -349,7 +394,7 @@ impl EscrowContract {
     }
 
     pub fn approve_milestone_release(env: Env, milestone_id: u32) {
-        let buyer = env.storage().instance().get(&DataKey::Buyer).unwrap();
+        let buyer: Address = env.storage().instance().get(&DataKey::Buyer).unwrap();
         buyer.require_auth();
 
         let status = _get_status(&env);
@@ -428,7 +473,7 @@ impl EscrowContract {
     }
 
     pub fn approve_release(env: Env) {
-        let buyer = env.storage().instance().get(&DataKey::Buyer).unwrap();
+        let buyer: Address = env.storage().instance().get(&DataKey::Buyer).unwrap();
         buyer.require_auth();
 
         if _get_status(&env) != EscrowStatus::Pending {
@@ -479,7 +524,7 @@ impl EscrowContract {
     }
 
     pub fn open_dispute(env: Env) {
-        let buyer = env.storage().instance().get(&DataKey::Buyer).unwrap();
+        let buyer: Address = env.storage().instance().get(&DataKey::Buyer).unwrap();
         buyer.require_auth();
 
         let current_status = _get_status(&env);
@@ -502,14 +547,14 @@ impl EscrowContract {
     }
 
     pub fn resolve_dispute(env: Env, released_to_buyer: bool) {
-        let arbiter = env.storage().instance().get(&DataKey::Arbiter).unwrap();
+        let arbiter: Address = env.storage().instance().get(&DataKey::Arbiter).unwrap();
         arbiter.require_auth();
 
         if _get_status(&env) != EscrowStatus::Disputed {
             panic!("escrow dispute is not open");
         }
 
-        let buyer = env.storage().instance().get(&DataKey::Buyer).unwrap();
+        let buyer: Address = env.storage().instance().get(&DataKey::Buyer).unwrap();
         let seller = _get_seller(&env);
         let token = _get_token(&env);
         let amount = _get_total_amount(&env);
@@ -569,7 +614,10 @@ impl EscrowContract {
         _get_platform_account(&env)
     }
 
-    pub fn get_milestones(env: Env) -> Vec<Milestone> {
-        _get_milestones(&env)
-    }
+
 }
+#[cfg(test)]
+mod test;
+
+#[cfg(test)]
+mod integration_test;
