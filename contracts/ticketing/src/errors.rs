@@ -12,4 +12,5 @@ pub enum TicketingError {
     AlreadyCheckedIn = 6,
     TicketAlreadyCheckedIn = 7,
     InvalidTimeRange = 8,
+    EventCancelled = 9,
 }

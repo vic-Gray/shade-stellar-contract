@@ -11,6 +11,13 @@ const HASH_LENGTH: usize = 32;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EventState {
+    Active,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Event {
     pub event_id: u64,
     pub organizer: Address,
@@ -19,6 +26,7 @@ pub struct Event {
     pub start_time: u64,
     pub end_time: u64,
     pub max_capacity: Option<u64>,
+    pub state: EventState,
 }
 
 #[contracttype]
@@ -152,6 +160,13 @@ pub struct TicketTransferedEvent {
     pub timestamp: u64,
 }
 
+#[contractevent]
+pub struct EventCancelledEvent {
+    pub event_id: u64,
+    pub organizer: Address,
+    pub timestamp: u64,
+}
+
 pub fn publish_ticket_transferred_event(
     env: &Env,
     ticket_id: u64,
@@ -165,6 +180,20 @@ pub fn publish_ticket_transferred_event(
         event_id,
         old_holder,
         new_holder,
+        timestamp,
+    }
+    .publish(env);
+}
+
+pub fn publish_event_cancelled_event(
+    env: &Env,
+    event_id: u64,
+    organizer: Address,
+    timestamp: u64,
+) {
+    EventCancelledEvent {
+        event_id,
+        organizer,
         timestamp,
     }
     .publish(env);
@@ -252,6 +281,7 @@ impl TicketingContract {
             start_time,
             end_time,
             max_capacity,
+            state: EventState::Active,
         };
 
         env.storage()
@@ -279,6 +309,38 @@ impl TicketingContract {
             .unwrap_or_else(|| panic_with_error!(env, TicketingError::EventNotFound))
     }
 
+    /// Cancel an event. Only the organizer can cancel their own event.
+    /// This will halt all future ticket sales for the event.
+    pub fn cancel_event(env: Env, organizer: Address, event_id: u64) {
+        organizer.require_auth();
+
+        let mut event: Event = env.storage()
+            .persistent()
+            .get(&DataKey::Event(event_id))
+            .unwrap_or_else(|| panic_with_error!(env, TicketingError::EventNotFound));
+
+        if event.organizer != organizer {
+            panic_with_error!(env, TicketingError::NotAuthorized);
+        }
+
+        if event.state == EventState::Cancelled {
+            panic_with_error!(env, TicketingError::EventCancelled);
+        }
+
+        event.state = EventState::Cancelled;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Event(event_id), &event);
+
+        publish_event_cancelled_event(
+            &env,
+            event_id,
+            organizer,
+            env.ledger().timestamp(),
+        );
+    }
+
     /// Issue a ticket for an event.
     /// The qr_hash must be a secure unique hash (SHA256) generated off-chain.
     pub fn issue_ticket(
@@ -298,6 +360,11 @@ impl TicketingContract {
 
         if event.organizer != organizer {
             panic_with_error!(env, TicketingError::NotAuthorized);
+        }
+
+        // Check if event is cancelled
+        if event.state == EventState::Cancelled {
+            panic_with_error!(env, TicketingError::EventCancelled);
         }
 
         // Check capacity if set
