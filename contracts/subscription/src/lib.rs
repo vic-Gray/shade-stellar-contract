@@ -243,20 +243,44 @@ impl SubscriptionContract {
         load_subscription(&env, sub_id)
     }
 
+    /// Cancel a subscription, halting all future billing immediately.
+    ///
+    /// Either the customer or the plan's merchant may cancel, and a
+    /// subscription can be cancelled from `Active` or `PastDue` — letting
+    /// a customer in grace opt out without first having to recover.
+    ///
+    /// When the customer initiates, this also zeros the contract's
+    /// token allowance from the customer so any stale authorization is
+    /// removed in the same call. The merchant cannot unilaterally revoke
+    /// a customer's allowance (the token requires the owner's auth), so a
+    /// merchant-initiated cancel only flips the status — the customer
+    /// can call [`revoke_billing_authorization`] separately if desired,
+    /// though it's already a no-op since a cancelled subscription will
+    /// reject future charges regardless.
     pub fn cancel_subscription(env: Env, caller: Address, sub_id: u64) {
         caller.require_auth();
         let mut sub = load_subscription(&env, sub_id);
-        if sub.status != SubscriptionStatus::Active {
+        if sub.status != SubscriptionStatus::Active && sub.status != SubscriptionStatus::PastDue {
             panic_with_error!(&env, SubscriptionError::SubscriptionNotActive);
         }
         let plan = load_plan(&env, sub.plan_id);
-        if sub.customer != caller && plan.merchant != caller {
+        let is_customer = sub.customer == caller;
+        let is_merchant = plan.merchant == caller;
+        if !is_customer && !is_merchant {
             panic_with_error!(&env, SubscriptionError::NotAuthorized);
         }
+
         sub.status = SubscriptionStatus::Cancelled;
         env.storage()
             .persistent()
             .set(&DataKey::Subscription(sub_id), &sub);
+
+        if is_customer {
+            let token_client = token::TokenClient::new(&env, &plan.token);
+            let spender = env.current_contract_address();
+            let current_seq = env.ledger().sequence();
+            token_client.approve(&sub.customer, &spender, &0_i128, &current_seq);
+        }
     }
 
     // ── Billing ───────────────────────────────────────────────────────────────
@@ -275,7 +299,7 @@ impl SubscriptionContract {
         let plan = load_plan(&env, sub.plan_id);
         let allowance_amount = plan.amount.saturating_mul(i128::from(cycles));
 
-        let ledger_expiry = env.ledger().sequence() + 17_280 * u32::from(cycles);
+        let ledger_expiry = env.ledger().sequence() + 17_280 * cycles;
         let token_client = token::TokenClient::new(&env, &plan.token);
         let spender = env.current_contract_address();
         token_client.approve(&customer, &spender, &allowance_amount, &ledger_expiry);
@@ -345,62 +369,34 @@ impl SubscriptionContract {
     /// state.
     ///
     /// Unlike `charge`, this never panics on insufficient allowance — that
-    /// failure mode is what the grace-period mechanism is for.
+    /// failure mode is what the grace-period mechanism is for. It does
+    /// still panic when the subscription is already cancelled or
+    /// terminated; use [`process_billing_cycle`] for batch processing
+    /// that tolerates terminal entries.
     pub fn process_charge(env: Env, sub_id: u64) -> ChargeOutcome {
-        let mut sub = load_subscription(&env, sub_id);
-        let plan = load_plan(&env, sub.plan_id);
-        let now = env.ledger().timestamp();
-
-        match sub.status {
-            SubscriptionStatus::Active => {
-                if sub.last_charged > 0 && now < sub.last_charged.saturating_add(plan.interval) {
-                    return ChargeOutcome::NotDueYet;
-                }
-                if try_pull_charge(&env, &sub, &plan) {
-                    sub.last_charged = now;
-                    sub.past_due_since = 0;
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::Subscription(sub_id), &sub);
-                    ChargeOutcome::Charged
-                } else if plan.grace_period == 0 {
-                    sub.status = SubscriptionStatus::Terminated;
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::Subscription(sub_id), &sub);
-                    ChargeOutcome::Terminated
-                } else {
-                    sub.status = SubscriptionStatus::PastDue;
-                    sub.past_due_since = now;
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::Subscription(sub_id), &sub);
-                    ChargeOutcome::EnteredGrace
-                }
-            }
-            SubscriptionStatus::PastDue => {
-                if try_pull_charge(&env, &sub, &plan) {
-                    sub.status = SubscriptionStatus::Active;
-                    sub.last_charged = now;
-                    sub.past_due_since = 0;
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::Subscription(sub_id), &sub);
-                    ChargeOutcome::Recovered
-                } else if now > sub.past_due_since.saturating_add(plan.grace_period) {
-                    sub.status = SubscriptionStatus::Terminated;
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::Subscription(sub_id), &sub);
-                    ChargeOutcome::Terminated
-                } else {
-                    ChargeOutcome::EnteredGrace
-                }
-            }
-            SubscriptionStatus::Cancelled | SubscriptionStatus::Terminated => {
-                panic_with_error!(&env, SubscriptionError::SubscriptionNotActive)
-            }
+        let outcome = step_billing_cycle(&env, sub_id);
+        if outcome == ChargeOutcome::Skipped {
+            panic_with_error!(&env, SubscriptionError::SubscriptionNotActive);
         }
+        outcome
+    }
+
+    /// Process the next billing cycle for a batch of subscriptions. This is
+    /// the scheduled-payment entry point: an off-chain scheduler hands in
+    /// the IDs that may be due, the contract pulls funds where allowances
+    /// permit, and a vector of [`ChargeOutcome`]s is returned in the same
+    /// order as `sub_ids`.
+    ///
+    /// Unlike [`process_charge`], terminal subscriptions in the batch
+    /// produce `ChargeOutcome::Skipped` rather than aborting the whole
+    /// call — so a single dead entry can't poison a sweep over many
+    /// active subscriptions.
+    pub fn process_billing_cycle(env: Env, sub_ids: Vec<u64>) -> Vec<ChargeOutcome> {
+        let mut outcomes: Vec<ChargeOutcome> = Vec::new(&env);
+        for sub_id in sub_ids.iter() {
+            outcomes.push_back(step_billing_cycle(&env, sub_id));
+        }
+        outcomes
     }
 
     /// Manually terminate a `PastDue` subscription whose grace period has
@@ -486,6 +482,67 @@ impl SubscriptionContract {
         let sub = load_subscription(&env, sub_id);
         let plan = load_plan(&env, sub.plan_id);
         prorated_refund(&sub, &plan, env.ledger().timestamp())
+    }
+}
+
+/// Run one step of the billing-cycle state machine for a subscription.
+///
+/// Shared by [`SubscriptionContract::process_charge`] (strict — panics on
+/// terminal subscriptions) and
+/// [`SubscriptionContract::process_billing_cycle`] (batch — tolerates
+/// terminal subscriptions via `ChargeOutcome::Skipped`).
+fn step_billing_cycle(env: &Env, sub_id: u64) -> ChargeOutcome {
+    let mut sub = load_subscription(env, sub_id);
+    let plan = load_plan(env, sub.plan_id);
+    let now = env.ledger().timestamp();
+
+    match sub.status {
+        SubscriptionStatus::Active => {
+            if sub.last_charged > 0 && now < sub.last_charged.saturating_add(plan.interval) {
+                return ChargeOutcome::NotDueYet;
+            }
+            if try_pull_charge(env, &sub, &plan) {
+                sub.last_charged = now;
+                sub.past_due_since = 0;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Subscription(sub_id), &sub);
+                ChargeOutcome::Charged
+            } else if plan.grace_period == 0 {
+                sub.status = SubscriptionStatus::Terminated;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Subscription(sub_id), &sub);
+                ChargeOutcome::Terminated
+            } else {
+                sub.status = SubscriptionStatus::PastDue;
+                sub.past_due_since = now;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Subscription(sub_id), &sub);
+                ChargeOutcome::EnteredGrace
+            }
+        }
+        SubscriptionStatus::PastDue => {
+            if try_pull_charge(env, &sub, &plan) {
+                sub.status = SubscriptionStatus::Active;
+                sub.last_charged = now;
+                sub.past_due_since = 0;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Subscription(sub_id), &sub);
+                ChargeOutcome::Recovered
+            } else if now > sub.past_due_since.saturating_add(plan.grace_period) {
+                sub.status = SubscriptionStatus::Terminated;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Subscription(sub_id), &sub);
+                ChargeOutcome::Terminated
+            } else {
+                ChargeOutcome::EnteredGrace
+            }
+        }
+        SubscriptionStatus::Cancelled | SubscriptionStatus::Terminated => ChargeOutcome::Skipped,
     }
 }
 

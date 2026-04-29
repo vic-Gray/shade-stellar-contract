@@ -61,8 +61,8 @@ pub enum SubscriptionStatus {
 }
 
 /// Outcome of a single billing cycle attempt. Returned by `process_charge`
-/// so callers (typically off-chain billing bots) can react without parsing
-/// emitted events.
+/// and `process_billing_cycle` so callers (typically off-chain billing
+/// bots) can react without parsing emitted events.
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -78,4 +78,9 @@ pub enum ChargeOutcome {
     Recovered = 3,
     /// Grace window expired without payment; subscription was terminated.
     Terminated = 4,
+    /// Subscription was already cancelled or terminated when the cycle
+    /// was processed — it is no longer chargeable. Only emitted by the
+    /// batch [`process_billing_cycle`] flow, which tolerates terminal
+    /// entries; the strict [`process_charge`] still panics in this case.
+    Skipped = 5,
 }
