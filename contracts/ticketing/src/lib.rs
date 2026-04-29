@@ -100,6 +100,15 @@ pub struct TicketVerification {
     pub already_checked_in: bool,
 }
 
+/// An entry in the per-event FIFO waitlist queue.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WaitlistEntry {
+    pub event_id: u64,
+    pub applicant: Address,
+    pub joined_at: u64,
+}
+
 // ── Storage Keys ───────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -304,9 +313,21 @@ fn is_event_organizer(env: &Env, event_id: u64, organizer: &Address) -> bool {
     let event: Event = env
         .storage()
         .persistent()
-        .get(&DataKey::Event(event_id))
-        .unwrap_or_else(|| panic_with_error!(env, TicketingError::EventNotFound));
-    &event.organizer == organizer
+        .set(&DataKey::Ticket(new_ticket_id), &ticket);
+
+    add_ticket_to_event(env, event_id, new_ticket_id);
+    increment_ticket_count(env, new_ticket_id);
+
+    publish_ticket_issued_event(
+        env,
+        new_ticket_id,
+        event_id,
+        holder,
+        qr_hash,
+        env.ledger().timestamp(),
+    );
+
+    new_ticket_id
 }
 
 fn get_tier_count(env: &Env) -> u64 {
@@ -859,6 +880,136 @@ impl TicketingContract {
             new_holder,
             env.ledger().timestamp(),
         );
+    }
+
+    /// Refund / cancel a ticket.
+    ///
+    /// - The ticket is marked `refunded = true` and removed from the event's
+    ///   active ticket list, freeing one capacity slot.
+    /// - If anyone is on the waitlist the **first** entry is automatically
+    ///   issued a new ticket (auto-assignment) and removed from the queue.
+    ///
+    /// Panics if: ticket not found, caller is not the holder, ticket is
+    /// already checked-in, or ticket is already refunded.
+    pub fn refund_ticket(env: Env, holder: Address, ticket_id: u64) {
+        holder.require_auth();
+
+        let mut ticket: Ticket = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ticket(ticket_id))
+            .unwrap_or_else(|| panic_with_error!(env, TicketingError::TicketNotFound));
+
+        if ticket.holder != holder {
+            panic_with_error!(env, TicketingError::NotAuthorized);
+        }
+
+        if ticket.checked_in {
+            panic_with_error!(env, TicketingError::AlreadyCheckedIn);
+        }
+
+        if ticket.refunded {
+            panic_with_error!(env, TicketingError::TicketAlreadyRefunded);
+        }
+
+        let event_id = ticket.event_id;
+        let timestamp = env.ledger().timestamp();
+
+        // Mark as refunded
+        ticket.refunded = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(ticket_id), &ticket);
+
+        // Remove from the event's active list (frees one capacity slot)
+        remove_ticket_from_event(&env, event_id, ticket_id);
+
+        publish_ticket_refunded_event(&env, ticket_id, event_id, holder, timestamp);
+
+        // ── Auto-assign waitlist ──────────────────────────────────────────────
+        let mut waitlist = get_waitlist(&env, event_id);
+        if !waitlist.is_empty() {
+            // Pop the front of the FIFO queue
+            let first = waitlist.get(0).unwrap();
+            let assignee = first.applicant.clone();
+
+            // Build new waitlist without the first entry
+            let mut new_waitlist: Vec<WaitlistEntry> = Vec::new(&env);
+            for idx in 1..waitlist.len() {
+                new_waitlist.push_back(waitlist.get(idx).unwrap());
+            }
+            save_waitlist(&env, event_id, &new_waitlist);
+
+            // Generate a deterministic placeholder QR hash for the new ticket.
+            // The assignee should replace this off-chain before the event.
+            let mut placeholder = [0u8; 32];
+            let id_bytes = ticket_id.to_be_bytes();
+            let ts_bytes = timestamp.to_be_bytes();
+            for i in 0..8 {
+                placeholder[i] = id_bytes[i];
+                placeholder[i + 8] = ts_bytes[i];
+            }
+            let qr_hash = BytesN::from_slice(&env, &placeholder);
+
+            let new_ticket_id = mint_ticket(&env, event_id, assignee.clone(), qr_hash);
+
+            publish_waitlist_assigned_event(&env, event_id, assignee, new_ticket_id, timestamp);
+        }
+    }
+
+    /// Join the waitlist for a sold-out event.
+    ///
+    /// Returns the caller's 1-based position in the queue.
+    ///
+    /// Panics if: event not found, event has no capacity limit set,
+    /// event is not yet at capacity, or caller is already on the list.
+    pub fn join_waitlist(env: Env, event_id: u64, applicant: Address) -> u32 {
+        applicant.require_auth();
+
+        let event: Event = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Event(event_id))
+            .unwrap_or_else(|| panic_with_error!(env, TicketingError::EventNotFound));
+
+        // Waitlists only make sense for capacity-limited events
+        let max_cap = match event.max_capacity {
+            Some(c) => c,
+            None => panic_with_error!(env, TicketingError::NotAtCapacity),
+        };
+
+        // Must be actually full before joining the waitlist
+        let active = active_ticket_count(&env, event_id);
+        if active < max_cap {
+            panic_with_error!(env, TicketingError::NotAtCapacity);
+        }
+
+        // Duplicate check
+        let mut waitlist = get_waitlist(&env, event_id);
+        for entry in waitlist.iter() {
+            if entry.applicant == applicant {
+                panic_with_error!(env, TicketingError::AlreadyOnWaitlist);
+            }
+        }
+
+        let timestamp = env.ledger().timestamp();
+        waitlist.push_back(WaitlistEntry {
+            event_id,
+            applicant: applicant.clone(),
+            joined_at: timestamp,
+        });
+
+        let position = waitlist.len(); // 1-based position
+        save_waitlist(&env, event_id, &waitlist);
+
+        publish_waitlist_joined_event(&env, event_id, applicant, position, timestamp);
+
+        position
+    }
+
+    /// Return the current waitlist queue for an event (FIFO order).
+    pub fn get_waitlist(env: Env, event_id: u64) -> Vec<WaitlistEntry> {
+        get_waitlist(&env, event_id)
     }
 
     /// Get the check-in record for a ticket.
