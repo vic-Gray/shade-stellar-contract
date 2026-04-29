@@ -600,3 +600,8 @@ impl EscrowContract {
         _get_platform_account(&env)
     }
 }
+#[cfg(test)]
+mod test;
+
+#[cfg(test)]
+mod integration_test;
