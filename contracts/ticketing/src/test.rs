@@ -509,3 +509,131 @@ fn test_ticket_not_found() {
     });
     assert!(result.is_err());
 }
+
+#[test]
+fn test_cancel_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TicketingContract, ());
+    let client = TicketingContractClient::new(&env, &contract_id);
+
+    let organizer = Address::generate(&env);
+    let name = String::from_str(&env, "Test Event");
+    let description = String::from_str(&env, "Test Description");
+    let start_time = 1_750_000_000;
+    let end_time = 1_750_000_600;
+
+    let event_id = client.create_event(
+        &organizer,
+        &name,
+        &description,
+        start_time,
+        end_time,
+        None,
+    );
+
+    // Verify event is initially active
+    let event = client.get_event(event_id);
+    assert_eq!(event.state, EventState::Active);
+
+    // Cancel the event
+    client.cancel_event(&organizer, event_id);
+
+    // Verify event is now cancelled
+    let event = client.get_event(event_id);
+    assert_eq!(event.state, EventState::Cancelled);
+}
+
+#[test]
+#[should_panic(expected = "TicketingError")]
+fn test_cancel_event_not_authorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TicketingContract, ());
+    let client = TicketingContractClient::new(&env, &contract_id);
+
+    let organizer = Address::generate(&env);
+    let unauthorized_user = Address::generate(&env);
+    let name = String::from_str(&env, "Test Event");
+    let description = String::from_str(&env, "Test Description");
+    let start_time = 1_750_000_000;
+    let end_time = 1_750_000_600;
+
+    let event_id = client.create_event(
+        &organizer,
+        &name,
+        &description,
+        start_time,
+        end_time,
+        None,
+    );
+
+    // Try to cancel event with unauthorized user
+    client.cancel_event(&unauthorized_user, event_id);
+}
+
+#[test]
+#[should_panic(expected = "TicketingError")]
+fn test_issue_ticket_cancelled_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TicketingContract, ());
+    let client = TicketingContractClient::new(&env, &contract_id);
+
+    let organizer = Address::generate(&env);
+    let holder = Address::generate(&env);
+    let name = String::from_str(&env, "Test Event");
+    let description = String::from_str(&env, "Test Description");
+    let start_time = 1_750_000_000;
+    let end_time = 1_750_000_600;
+
+    let event_id = client.create_event(
+        &organizer,
+        &name,
+        &description,
+        start_time,
+        end_time,
+        None,
+    );
+
+    // Cancel the event
+    client.cancel_event(&organizer, event_id);
+
+    // Try to issue ticket for cancelled event - should fail
+    client.issue_ticket(
+        &organizer,
+        event_id,
+        &holder,
+        &test_qr_hash(&env, 1),
+    );
+}
+
+#[test]
+#[should_panic(expected = "TicketingError")]
+fn test_cancel_already_cancelled_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TicketingContract, ());
+    let client = TicketingContractClient::new(&env, &contract_id);
+
+    let organizer = Address::generate(&env);
+    let name = String::from_str(&env, "Test Event");
+    let description = String::from_str(&env, "Test Description");
+    let start_time = 1_750_000_000;
+    let end_time = 1_750_000_600;
+
+    let event_id = client.create_event(
+        &organizer,
+        &name,
+        &description,
+        start_time,
+        end_time,
+        None,
+    );
+
+    // Cancel the event
+    client.cancel_event(&organizer, event_id);
+
+    // Try to cancel again - should fail
+    client.cancel_event(&organizer, event_id);
+}
