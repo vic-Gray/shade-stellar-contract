@@ -3,11 +3,8 @@ use crate::events::{
     publish_account_initialized_event,
     publish_account_restricted_event,
     publish_account_verified_event,
-    publish_pending_withdrawal_created_event,
     publish_refund_processed_event,
     publish_token_added_event,
-    publish_withdrawal_approved_event,
-    publish_withdrawal_executed_event,
     publish_withdrawal_to_event,
 };
 use crate::interface::MerchantAccountTrait;
@@ -296,90 +293,5 @@ impl MerchantAccount {
             amount,
             env.ledger().timestamp(),
         );
-    }
-
-    fn set_withdrawal_threshold(env: Env, threshold: i128) {
-        let manager = get_manager(&env);
-        manager.require_auth();
-        env.storage().persistent().set(&DataKey::WithdrawalThreshold, &threshold);
-    }
-
-    fn get_withdrawal_threshold(env: Env) -> i128 {
-        get_withdrawal_threshold(&env)
-    }
-
-    fn add_co_signer(env: Env, co_signer: Address) {
-        let manager = get_manager(&env);
-        manager.require_auth();
-
-        let mut co_signers = get_co_signers(&env);
-        for existing in co_signers.iter() {
-            if existing == co_signer {
-                return;
-            }
-        }
-        co_signers.push_back(co_signer);
-        env.storage().persistent().set(&DataKey::CoSigners, &co_signers);
-    }
-
-    fn get_co_signers(env: Env) -> Vec<Address> {
-        get_co_signers(&env)
-    }
-
-    fn approve_withdrawal(env: Env, withdrawal_id: u64) {
-        let approver = get_manager(&env);
-        approver.require_auth();
-
-        if !is_co_signer(&env, &approver) && approver != get_manager(&env) {
-            panic_with_error!(&env, ContractError::InvalidCoSigner);
-        }
-
-        let mut pending = env
-            .storage()
-            .persistent()
-            .get::<DataKey, PendingWithdrawal>(&DataKey::PendingWithdrawals(withdrawal_id))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PendingWithdrawalNotFound));
-
-        for existing in pending.approvals.iter() {
-            if existing == approver {
-                panic_with_error!(&env, ContractError::AlreadyApproved);
-            }
-        }
-
-        pending.approvals.push_back(approver.clone());
-        let co_signers = get_co_signers(&env);
-        let required_approvals = co_signers.len();
-
-        if pending.approvals.len() >= required_approvals {
-            let token_client = token::TokenClient::new(&env, &pending.token);
-            let current_balance = token_client.balance(&env.current_contract_address());
-
-            if pending.amount > current_balance {
-                panic_with_error!(&env, ContractError::InsufficientBalance);
-            }
-
-            token_client.transfer(
-                &env.current_contract_address(),
-                &pending.recipient,
-                &pending.amount
-            );
-            env.storage().persistent().remove(&DataKey::PendingWithdrawals(withdrawal_id));
-            publish_withdrawal_executed_event(&env, withdrawal_id, env.ledger().timestamp());
-        } else {
-            env.storage().persistent().set(&DataKey::PendingWithdrawals(withdrawal_id), &pending);
-            publish_withdrawal_approved_event(
-                &env,
-                withdrawal_id,
-                approver,
-                env.ledger().timestamp()
-            );
-        }
-    }
-
-    fn get_pending_withdrawal(env: Env, withdrawal_id: u64) -> PendingWithdrawal {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PendingWithdrawals(withdrawal_id))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PendingWithdrawalNotFound))
     }
 }
