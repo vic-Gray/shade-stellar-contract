@@ -74,6 +74,7 @@ pre-commit run --all-files
 ```
 
 The hooks will automatically:
+
 - Validate YAML files
 - Format Rust code
 - Run clippy checks
@@ -175,5 +176,7 @@ If you have questions, feel free to:
 - Ask in pull request comments
 - Contact the maintainers
 
-Thank you for contributing! 🎉
+Thank you for contributing to the development! 🎉
+
+<br />
 
