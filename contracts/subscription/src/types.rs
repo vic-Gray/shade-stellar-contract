@@ -65,6 +65,9 @@ pub struct Subscription {
     /// currently past due. Used to enforce the plan's grace period.
     pub past_due_since: u64,
     pub pending_downgrade_plan_id: u64,
+    /// Subscriber-preferred payment token. When `Some`, billing uses this
+    /// token instead of the plan's default token (must be an accepted token).
+    pub preferred_token: Option<Address>,
 }
 
 #[contracttype]

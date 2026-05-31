@@ -4,6 +4,8 @@ mod errors;
 #[cfg(test)]
 mod test_grace;
 #[cfg(test)]
+mod test_integration;
+#[cfg(test)]
 mod test_refund;
 #[cfg(test)]
 mod test_upgrades_downgrades;
@@ -239,11 +241,80 @@ impl SubscriptionContract {
             last_charged: 0,
             past_due_since: 0,
             pending_downgrade_plan_id: 0,
+            preferred_token: None,
         };
         env.storage()
             .persistent()
             .set(&DataKey::Subscription(sub_id), &sub);
         sub_id
+    }
+
+    /// Subscribe a customer to a plan with a preferred payment token.
+    /// The token must be in the accepted-tokens list. Returns the new subscription ID.
+    pub fn subscribe_with_token(env: Env, customer: Address, plan_id: u64, preferred_token: Address) -> u64 {
+        customer.require_auth();
+
+        let plan = load_plan(&env, plan_id);
+        if !plan.active {
+            panic_with_error!(&env, SubscriptionError::PlanNotActive);
+        }
+
+        let accepted: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AcceptedTokens)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !accepted.contains(&preferred_token) {
+            panic_with_error!(&env, SubscriptionError::TokenNotAccepted);
+        }
+
+        let sub_id = get_subscription_count(&env) + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::SubscriptionCount, &sub_id);
+
+        let sub = Subscription {
+            id: sub_id,
+            plan_id,
+            customer,
+            status: SubscriptionStatus::Active,
+            created_at: env.ledger().timestamp(),
+            last_charged: 0,
+            past_due_since: 0,
+            pending_downgrade_plan_id: 0,
+            preferred_token: Some(preferred_token),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Subscription(sub_id), &sub);
+        sub_id
+    }
+
+    /// Update the preferred payment token for an existing subscription.
+    /// Pass `None` to revert to the plan's default token.
+    pub fn set_preferred_token(env: Env, customer: Address, sub_id: u64, preferred_token: Option<Address>) {
+        customer.require_auth();
+        let mut sub = load_subscription(&env, sub_id);
+        if sub.customer != customer {
+            panic_with_error!(&env, SubscriptionError::NotAuthorized);
+        }
+        if sub.status != SubscriptionStatus::Active {
+            panic_with_error!(&env, SubscriptionError::SubscriptionNotActive);
+        }
+        if let Some(ref token) = preferred_token {
+            let accepted: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AcceptedTokens)
+                .unwrap_or_else(|| Vec::new(&env));
+            if !accepted.contains(token) {
+                panic_with_error!(&env, SubscriptionError::TokenNotAccepted);
+            }
+        }
+        sub.preferred_token = preferred_token;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Subscription(sub_id), &sub);
     }
 
     pub fn get_subscription(env: Env, sub_id: u64) -> Subscription {
@@ -283,7 +354,8 @@ impl SubscriptionContract {
             .set(&DataKey::Subscription(sub_id), &sub);
 
         if is_customer {
-            let token_client = token::TokenClient::new(&env, &plan.token);
+            let billing_token = sub.preferred_token.as_ref().unwrap_or(&plan.token);
+            let token_client = token::TokenClient::new(&env, billing_token);
             let spender = env.current_contract_address();
             let current_seq = env.ledger().sequence();
             token_client.approve(&sub.customer, &spender, &0_i128, &current_seq);
@@ -312,10 +384,11 @@ impl SubscriptionContract {
             panic_with_error!(&env, SubscriptionError::SubscriptionNotActive);
         }
         let plan = load_plan(&env, sub.plan_id);
+        let billing_token = sub.preferred_token.as_ref().unwrap_or(&plan.token);
         let allowance_amount = plan.amount.saturating_mul(i128::from(cycles));
 
         let ledger_expiry = env.ledger().sequence() + 17_280 * cycles;
-        let token_client = token::TokenClient::new(&env, &plan.token);
+        let token_client = token::TokenClient::new(&env, billing_token);
         let spender = env.current_contract_address();
         token_client.approve(&customer, &spender, &allowance_amount, &ledger_expiry);
     }
@@ -326,7 +399,8 @@ impl SubscriptionContract {
     pub fn get_billing_allowance(env: Env, customer: Address, sub_id: u64) -> i128 {
         let sub = load_subscription(&env, sub_id);
         let plan = load_plan(&env, sub.plan_id);
-        let token_client = token::TokenClient::new(&env, &plan.token);
+        let billing_token = sub.preferred_token.as_ref().unwrap_or(&plan.token);
+        let token_client = token::TokenClient::new(&env, billing_token);
         let spender = env.current_contract_address();
         token_client.allowance(&customer, &spender)
     }
@@ -341,7 +415,8 @@ impl SubscriptionContract {
             panic_with_error!(&env, SubscriptionError::NotAuthorized);
         }
         let plan = load_plan(&env, sub.plan_id);
-        let token_client = token::TokenClient::new(&env, &plan.token);
+        let billing_token = sub.preferred_token.as_ref().unwrap_or(&plan.token);
+        let token_client = token::TokenClient::new(&env, billing_token);
         let spender = env.current_contract_address();
         let current_seq = env.ledger().sequence();
         token_client.approve(&customer, &spender, &0_i128, &current_seq);
@@ -369,7 +444,7 @@ impl SubscriptionContract {
             plan = load_plan(&env, sub.plan_id);
         }
 
-        let token_client = token::TokenClient::new(&env, &plan.token);
+        let token_client = token::TokenClient::new(&env, sub.preferred_token.as_ref().unwrap_or(&plan.token));
         let spender = env.current_contract_address();
 
         let allowance = token_client.allowance(&sub.customer, &spender);
@@ -506,7 +581,8 @@ impl SubscriptionContract {
         }
 
         // Pull the refund from the merchant's/creator's balance into the customer's.
-        let token_client = token::TokenClient::new(&env, &plan.token);
+        let billing_token = sub.preferred_token.as_ref().unwrap_or(&plan.token);
+        let token_client = token::TokenClient::new(&env, billing_token);
         let spender = env.current_contract_address();
         token_client.transfer_from(&spender, source, &sub.customer, &refund_amount);
 
@@ -560,7 +636,7 @@ impl SubscriptionContract {
             upgrade_cost = 0;
         }
 
-        let token_client = token::TokenClient::new(&env, &new_plan.token);
+        let token_client = token::TokenClient::new(&env, sub.preferred_token.as_ref().unwrap_or(&new_plan.token));
         let spender = env.current_contract_address();
 
         if upgrade_cost > 0 {
@@ -732,7 +808,8 @@ fn step_billing_cycle(env: &Env, sub_id: u64) -> ChargeOutcome {
 /// amount. Returns `false` if the allowance is insufficient — callers
 /// translate that into a state transition (PastDue / Terminated).
 fn try_pull_charge(env: &Env, sub: &Subscription, plan: &Plan) -> bool {
-    let token_client = token::TokenClient::new(env, &plan.token);
+    let billing_token = sub.preferred_token.as_ref().unwrap_or(&plan.token);
+    let token_client = token::TokenClient::new(env, billing_token);
     let spender = env.current_contract_address();
     let allowance = token_client.allowance(&sub.customer, &spender);
     if allowance < plan.amount {
