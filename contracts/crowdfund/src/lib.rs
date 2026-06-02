@@ -154,6 +154,79 @@ impl CrowdfundContract {
         env.storage().persistent().set(&DataKey::Deadline, &deadline);
         env.storage().persistent().set(&DataKey::Raised, &0_i128);
         env.storage().persistent().set(&DataKey::Executed, &false);
+        env.storage().persistent().set(&DataKey::RefundProcessed, &false);
+        env.storage().persistent().set(&DataKey::Contributors, &Vec::<Address>::new(&env));
+    }
+
+    /// Set the Shade gateway contract address. Only callable once by the organizer.
+    pub fn set_shade_gateway(env: Env, shade_gateway: Address) {
+        let organizer: Address = env.storage().persistent().get(&DataKey::Organizer)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        organizer.require_auth();
+        if env.storage().persistent().has(&DataKey::ShadeGateway) {
+            panic_with_error!(&env, CrowdfundError::AlreadyInitialized);
+        }
+        env.storage().persistent().set(&DataKey::ShadeGateway, &shade_gateway);
+    }
+
+    /// Register this campaign's Shade merchant ID. Only callable once by the organizer.
+    pub fn set_merchant_id(env: Env, merchant_id: u64) {
+        let organizer: Address = env.storage().persistent().get(&DataKey::Organizer)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        organizer.require_auth();
+        if env.storage().persistent().has(&DataKey::MerchantId) {
+            panic_with_error!(&env, CrowdfundError::AlreadyInitialized);
+        }
+        env.storage().persistent().set(&DataKey::MerchantId, &merchant_id);
+    }
+
+    /// Set the Shade merchant account address for refunds. Only callable once by the organizer.
+    pub fn set_merchant_account(env: Env, merchant_account: Address) {
+        let organizer: Address = env.storage().persistent().get(&DataKey::Organizer)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        organizer.require_auth();
+        if env.storage().persistent().has(&DataKey::MerchantAccount) {
+            panic_with_error!(&env, CrowdfundError::AlreadyInitialized);
+        }
+        env.storage().persistent().set(&DataKey::MerchantAccount, &merchant_account);
+    }
+
+    /// Process a pledge through the Shade gateway (#300).
+    pub fn pledge(env: Env, contributor: Address, amount: i128, invoice_id: u64) {
+        contributor.require_auth();
+        if amount <= 0 { panic_with_error!(&env, CrowdfundError::InvalidAmount); }
+
+        let deadline: u64 = env.storage().persistent().get(&DataKey::Deadline)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        if env.ledger().timestamp() > deadline { panic_with_error!(&env, CrowdfundError::CampaignEnded); }
+        if env.storage().persistent().get(&DataKey::Executed).unwrap_or(false) {
+            panic_with_error!(&env, CrowdfundError::AlreadyExecuted);
+        }
+
+        let shade_gateway: Address = env.storage().persistent().get(&DataKey::ShadeGateway)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::ShadeGatewayNotSet));
+        let token_addr: Address = env.storage().persistent().get(&DataKey::Token)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+
+        InvoicePaymentClient::new(&env, &shade_gateway).pay_invoice(&contributor, &invoice_id);
+
+        let merchant_account: Address = env.storage().persistent().get(&DataKey::MerchantAccount)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::MerchantAccountNotSet));
+        MerchantAccountRefundClient::new(&env, &merchant_account)
+            .refund(&token_addr, &amount, &env.current_contract_address());
+
+        let raised: i128 = env.storage().persistent().get(&DataKey::Raised).unwrap_or(0);
+        let new_raised = raised.saturating_add(amount);
+        env.storage().persistent().set(&DataKey::Raised, &new_raised);
+
+        let prev: i128 = env.storage().persistent()
+            .get(&DataKey::Pledge(contributor.clone())).unwrap_or(0);
+        env.storage().persistent()
+            .set(&DataKey::Pledge(contributor.clone()), &prev.saturating_add(amount));
+
+        Self::track_contributor(&env, contributor.clone());
+        Self::check_stretch_goals(&env, new_raised);
+        PledgeReceivedEvent { contributor, amount }.publish(&env);
     }
 
     /// Contribute `amount` tokens to the campaign. The caller must have
@@ -195,7 +268,7 @@ impl CrowdfundContract {
         let new_raised = raised.saturating_add(amount);
         env.storage().persistent().set(&DataKey::Raised, &new_raised);
 
-        // Record per-contributor pledge for potential refunds (#304).
+        // Record per-contributor pledge for potential refunds (#301).
         let prev_pledge: i128 = env
             .storage()
             .persistent()
@@ -203,7 +276,10 @@ impl CrowdfundContract {
             .unwrap_or(0);
         env.storage()
             .persistent()
-            .set(&DataKey::Pledge(contributor), &prev_pledge.saturating_add(amount));
+            .set(&DataKey::Pledge(contributor.clone()), &prev_pledge.saturating_add(amount));
+
+        // Track contributor for batch refunds (#307).
+        Self::track_contributor(&env, contributor);
 
         // Check and emit stretch goal events (#306).
         Self::check_stretch_goals(&env, new_raised);
@@ -331,6 +407,48 @@ impl CrowdfundContract {
             .transfer(&contract_addr, &contributor, &pledge);
 
         RefundClaimedEvent { contributor: contributor.clone(), amount: pledge }.publish(&env);
+    }
+
+    /// Batch refund all contributors after a failed campaign (#307).
+    /// Callable by anyone once deadline has passed and goal was not met.
+    pub fn batch_refund(env: Env) {
+        let deadline: u64 = env.storage().persistent().get(&DataKey::Deadline)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        if env.ledger().timestamp() <= deadline {
+            panic_with_error!(&env, CrowdfundError::CampaignNotEnded);
+        }
+
+        let goal: i128 = env.storage().persistent().get(&DataKey::Goal)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        let raised: i128 = env.storage().persistent().get(&DataKey::Raised).unwrap_or(0);
+        if raised >= goal { panic_with_error!(&env, CrowdfundError::GoalReached); }
+
+        if env.storage().persistent().get(&DataKey::RefundProcessed).unwrap_or(false) {
+            panic_with_error!(&env, CrowdfundError::RefundAlreadyProcessed);
+        }
+        env.storage().persistent().set(&DataKey::RefundProcessed, &true);
+
+        let token_addr: Address = env.storage().persistent().get(&DataKey::Token)
+            .unwrap_or_else(|| panic_with_error!(&env, CrowdfundError::NotInitialized));
+        let token_client = token::TokenClient::new(&env, &token_addr);
+        let contract_addr = env.current_contract_address();
+
+        let contributors: Vec<Address> = env.storage().persistent()
+            .get(&DataKey::Contributors).unwrap_or_else(|| Vec::new(&env));
+        let count = contributors.len();
+        let mut total_refunded: i128 = 0;
+
+        for contributor in contributors.iter() {
+            let pledge: i128 = env.storage().persistent()
+                .get(&DataKey::Pledge(contributor.clone())).unwrap_or(0);
+            if pledge > 0 {
+                env.storage().persistent().set(&DataKey::Pledge(contributor.clone()), &0_i128);
+                token_client.transfer(&contract_addr, &contributor, &pledge);
+                total_refunded = total_refunded.saturating_add(pledge);
+            }
+        }
+
+        BatchRefundProcessedEvent { total_refunded, contributor_count: count }.publish(&env);
     }
 
     /// Add ordered stretch goal milestones (must be in ascending order, all > goal) (#306).
@@ -660,6 +778,16 @@ impl CrowdfundContract {
 
     /// Emit a `stretch / reached` event for each milestone crossed by `new_raised`
     /// that has not already been triggered.
+    fn track_contributor(env: &Env, contributor: Address) {
+        let mut contributors: Vec<Address> = env.storage().persistent()
+            .get(&DataKey::Contributors).unwrap_or_else(|| Vec::new(env));
+        for c in contributors.iter() {
+            if c == contributor { return; }
+        }
+        contributors.push_back(contributor);
+        env.storage().persistent().set(&DataKey::Contributors, &contributors);
+    }
+
     fn check_stretch_goals(env: &Env, new_raised: i128) {
         let milestones: Vec<i128> = env
             .storage()
